@@ -5,7 +5,6 @@ import { ServerSidebar } from "@/components/server/server-sidebar";
 import { useMockStore } from "@/lib/mock-store";
 import { useUIStore } from "@/hooks/use-ui-store";
 import { cn } from "@/lib/utils";
-import { useBufferShortcuts } from "@/hooks/use-buffer-shortcuts";
 
 export const MainLayout = () => {
   const { serverId } = useParams();
@@ -13,8 +12,6 @@ export const MainLayout = () => {
   const navigate = useNavigate();
   const showNavigationSidebar = useUIStore((state) => state.showNavigationSidebar);
   const showServerSidebar = useUIStore((state) => state.showServerSidebar);
-
-  useBufferShortcuts();
 
   const activeServer = servers.find((s) => s.id === serverId) || servers[0];
 

@@ -9,13 +9,7 @@ import {
   DirectMessage, 
   Profile, 
   ChannelType,
-  LogPage,
-  BufferRef,
-  BufferReadState,
-  BufferKey,
-  ScrollViewportState,
-  MessageAnchor,
-  MentionMatch
+  LogPage
 } from "@/types";
 import { 
   INITIAL_SERVERS, 
@@ -25,40 +19,10 @@ import {
 } from "./mock-data";
 import { v4 as uuidv4 } from "uuid";
 import { ImageUploadConfig, UrlAuthRule } from "./upload/types";
-import { getBufferKey } from "./chat-buffer";
-import { findMention } from "./mention-matcher";
 
 export const MAX_MESSAGES_IN_MEMORY = 500;
 
-const chatKey = (serverId: string, type: "channel" | "conversation", id: string) =>
-  getBufferKey(serverId, type, id);
-
-const hashString = (value: string) => {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
-};
-
-const emptyReadState = (): BufferReadState => ({
-  initialized: false,
-  lastReadTimestamp: null,
-  unreadCount: 0,
-  mentionCount: 0,
-  firstUnread: null,
-  latestMessageTimestamp: null,
-});
-
-const isWindowFocused = () => typeof document !== "undefined" && document.hasFocus() && document.visibilityState === "visible";
-
-const getMessageAnchor = (message: Message | DirectMessage): MessageAnchor => ({
-  timestamp: message.sourceTimestamp || message.createdAt,
-  messageId: message.id,
-  sender: message.member.profile.name,
-  fingerprint: `${message.member.profile.name}|${message.content}`.slice(0, 200),
-});
+const chatKey = (type: "channel" | "conversation", id: string) => `${type}:${id}`;
 
 const parseLogTimestamp = (timestamp: string) => {
   const parsed = new Date(timestamp.replace(" ", "T"));
@@ -95,7 +59,7 @@ const mapLogEntries = (
   const createdAt = parseLogTimestamp(entry.timestamp);
 
   return {
-    id: `log-${hashString(`${createdAt}|${entry.sender}|${entry.content}`)}`,
+    id: `log-${uuidv4().slice(0, 12)}`,
     content: entry.content,
     fileUrl: null,
     memberId: member.id,
@@ -103,7 +67,6 @@ const mapLogEntries = (
     channelId: type === "channel" ? chatId : undefined,
     conversationId: type === "conversation" ? chatId : undefined,
     deleted: false,
-    sourceTimestamp: createdAt,
     createdAt,
     updatedAt: createdAt,
   } as Message | DirectMessage;
@@ -141,9 +104,6 @@ interface MockState {
   messages: Record<string, Message[]>;
   directMessages: Record<string, DirectMessage[]>;
   activeChatKey: string | null;
-  readStates: Record<BufferKey, BufferReadState>;
-  viewportStates: Record<BufferKey, ScrollViewportState>;
-  messageSequences: Record<BufferKey, number>;
   historyLoadToken: number;
   historyNextOffset: number | null;
   historyHasMore: boolean;
@@ -201,13 +161,6 @@ interface MockState {
   loadChatHistory: (type: "channel" | "conversation", chatId: string, serverId: string, target: string) => Promise<void>;
   loadOlderHistory: (type: "channel" | "conversation", chatId: string, serverId: string, target: string) => Promise<boolean>;
   addMessage: (channelId: string, member: Member, content: string, fileUrl?: string | null, isSystem?: boolean) => Message;
-  ingestIncomingMessage: (buffer: BufferRef, member: Member, content: string, fileUrl?: string | null, isSystem?: boolean, sourceTimestamp?: string) => Message;
-  ingestIncomingDirectMessage: (buffer: BufferRef, member: Member, content: string, fileUrl?: string | null, sourceTimestamp?: string) => DirectMessage;
-  ingestIncomingChannelBatch: (items: Array<{ buffer: BufferRef; member: Member; content: string; fileUrl?: string | null; isSystem?: boolean; timestamp?: string }>) => void;
-  setViewportState: (bufferKey: BufferKey, viewport: Omit<ScrollViewportState, "revision">) => void;
-  markBufferRead: (bufferKey: BufferKey, reason: "bottom" | "jump-to-present" | "escape" | "manual") => void;
-  clearBufferNotifications: (bufferKey: BufferKey) => void;
-  updateUnreadProgress: (bufferKey: BufferKey, remainingUnread: number, newFirstUnread: MessageAnchor | null, remainingMentions: number) => void;
   deleteMessage: (channelId: string, messageId: string) => void;
 
   // Direct Message Actions
@@ -226,9 +179,6 @@ export const useMockStore = create<MockState>()(
       messages: INITIAL_MESSAGES,
       directMessages: INITIAL_DIRECT_MESSAGES,
       activeChatKey: null,
-      readStates: {},
-      viewportStates: {},
-      messageSequences: {},
       historyLoadToken: 0,
       historyNextOffset: null,
       historyHasMore: false,
@@ -814,8 +764,7 @@ export const useMockStore = create<MockState>()(
       },
 
       loadChatHistory: async (type, chatId, serverId, target) => {
-        const requestedKey = chatKey(serverId, type, chatId);
-        // OnChannelDeselect: nie czyść automatycznie – tylko Esc / Jump to Present oraz top-margin
+        const requestedKey = chatKey(type, chatId);
         const requestToken = get().historyLoadToken + 1;
         set({
           activeChatKey: requestedKey,
@@ -837,56 +786,16 @@ export const useMockStore = create<MockState>()(
 
           const server = state.servers.find((item) => item.id === serverId);
           const messages = mapLogEntries(page.entries, server, serverId, type, chatId);
-          const currentAfter = get();
-          if (currentAfter.activeChatKey !== requestedKey || currentAfter.historyLoadToken !== requestToken) return;
-          // Race: w czasie load wpadły nowe wiadomości via ingest (emit IRC) – nie nadpisuj ich
-          const existingAfter = type === "channel" ? currentAfter.messages[chatId] || [] : currentAfter.directMessages[chatId] || [];
-          const dedupedExisting = (existingAfter as any[]).filter((em: any) => !(messages as any[]).some((lm: any) => lm.member?.profile?.name === em.member?.profile?.name && lm.content === em.content && Math.abs(new Date(lm.createdAt).getTime() - new Date(em.createdAt).getTime()) < 2000));
-          const merged = [...messages, ...dedupedExisting].slice(-MAX_MESSAGES_IN_MEMORY) as typeof messages;
-          const latestMessage = (merged[merged.length - 1] as any) || messages[messages.length - 1];
-          let existingReadState = currentAfter.readStates[requestedKey] || state.readStates[requestedKey];
-          // OnChannelOpened: jeśli brak dividera ale są wiadomości nowsze niż LastRead, wstaw divider
-          if (existingReadState?.initialized && !existingReadState.firstUnread && existingReadState.lastReadTimestamp) {
-            const firstNewIdx = (merged as any[]).findIndex((m: any) => new Date(m.sourceTimestamp || m.createdAt).getTime() > new Date(existingReadState.lastReadTimestamp as string).getTime());
-            if (firstNewIdx >= 0) {
-              const firstNew = (merged as any[])[firstNewIdx];
-              const remaining = (merged as any[]).length - firstNewIdx;
-              let mentions = 0;
-              for (let i=firstNewIdx;i<(merged as any[]).length;i++) if ((merged as any[])[i].mention?.matched) mentions++;
-              existingReadState = {
-                ...existingReadState,
-                firstUnread: {
-                  timestamp: firstNew.sourceTimestamp || firstNew.createdAt,
-                  messageId: firstNew.id,
-                  sender: firstNew.member.profile.name,
-                  fingerprint: `${firstNew.member.profile.name}|${firstNew.content}`.slice(0,200),
-                },
-                unreadCount: remaining,
-                mentionCount: mentions,
-              };
-            }
-          }
-          const readState = existingReadState?.initialized
-            ? existingReadState
-            : {
-                ...emptyReadState(),
-                initialized: true,
-                lastReadTimestamp: latestMessage?.sourceTimestamp || latestMessage?.createdAt || null,
-                latestMessageTimestamp: latestMessage?.sourceTimestamp || latestMessage?.createdAt || null,
-                latestMessageId: latestMessage?.id,
-              };
 
           if (type === "channel") {
             set({
-              messages: { [chatId]: merged as Message[] },
-              readStates: { ...currentAfter.readStates, [requestedKey]: readState },
+              messages: { [chatId]: messages as Message[] },
               historyNextOffset: page.nextOffset,
               historyHasMore: page.nextOffset !== null,
             });
           } else {
             set({
-              directMessages: { [chatId]: merged as DirectMessage[] },
-              readStates: { ...currentAfter.readStates, [requestedKey]: readState },
+              directMessages: { [chatId]: messages as DirectMessage[] },
               historyNextOffset: page.nextOffset,
               historyHasMore: page.nextOffset !== null,
             });
@@ -897,7 +806,7 @@ export const useMockStore = create<MockState>()(
       },
 
       loadOlderHistory: async (type, chatId, serverId, target) => {
-        const requestedKey = chatKey(serverId, type, chatId);
+        const requestedKey = chatKey(type, chatId);
         const state = get();
         if (
           state.activeChatKey !== requestedKey
@@ -975,13 +884,7 @@ export const useMockStore = create<MockState>()(
           updatedAt: new Date().toISOString(),
         };
 
-        const serverId = member.serverId || get().servers
-          .flatMap((server) => server.channels)
-          .find((channel) => channel.id === channelId)?.serverId || "";
-        const bufferKey = getBufferKey(serverId, "channel", channelId);
-        const now = newMessage.createdAt;
-
-        if (get().activeChatKey === bufferKey) {
+        if (get().activeChatKey === chatKey("channel", channelId)) {
           set((state) => ({
             messages: {
               [channelId]: [...(state.messages[channelId] || []), newMessage].slice(-MAX_MESSAGES_IN_MEMORY),
@@ -989,368 +892,7 @@ export const useMockStore = create<MockState>()(
           }));
         }
 
-        // Self-Action Override: wysłanie wymusza IsAtBottom i czyści divider
-        set((state) => {
-          const previous = state.readStates[bufferKey] || emptyReadState();
-          return {
-            readStates: {
-              ...state.readStates,
-              [bufferKey]: {
-                ...previous,
-                initialized: true,
-                latestMessageTimestamp: now,
-                latestMessageId: newMessage.id,
-                lastReadTimestamp: now,
-                lastReadMessageId: newMessage.id,
-                firstUnread: null,
-                unreadCount: 0,
-                mentionCount: 0,
-              },
-            },
-            messageSequences: {
-              ...state.messageSequences,
-              [bufferKey]: (state.messageSequences[bufferKey] || 0) + 1,
-            },
-            viewportStates: {
-              ...state.viewportStates,
-              [bufferKey]: {
-                bufferKey,
-                geometry: state.viewportStates[bufferKey]?.geometry || { scrollTop: 0, scrollHeight: 0, clientHeight: 0, distanceFromBottom: 0, distanceFromTop: 0 },
-                isAtBottom: true,
-                isAtTop: false,
-                revision: (state.viewportStates[bufferKey]?.revision || 0) + 1,
-              },
-            },
-          };
-        });
-
         return newMessage;
-      },
-
-      ingestIncomingMessage: (buffer, member, content, fileUrl, isSystem, sourceTimestamp) => {
-        const state = get();
-        const now = sourceTimestamp || new Date().toISOString();
-        const mention = !isSystem
-          ? findMention(
-              content,
-              state.currentProfile.name,
-              state.servers.find((server) => server.id === buffer.serverId)?.highlightKeywords || [],
-            )
-          : { matched: false, source: null } as MentionMatch;
-        const newMessage: Message = {
-          id: `msg-${uuidv4().slice(0, 8)}`,
-          content,
-          fileUrl: fileUrl || null,
-          memberId: member.id,
-          member,
-          channelId: buffer.id,
-          deleted: false,
-          isSystem,
-          mention,
-          sourceTimestamp: now,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        set((current) => {
-          const previous = current.readStates[buffer.key] || emptyReadState();
-          const sequence = (current.messageSequences[buffer.key] || 0) + 1;
-          const active = current.activeChatKey === buffer.key;
-          const eligible = !isSystem;
-          const isAtBottom = current.viewportStates[buffer.key]?.isAtBottom === true;
-          const isFocused = isWindowFocused();
-          let nextFirstUnread = previous.firstUnread;
-          let nextUnread = previous.unreadCount;
-          let nextMentions = previous.mentionCount;
-          let nextLastReadTs: string | null = previous.lastReadTimestamp;
-          let nextLastReadId: string | undefined = previous.lastReadMessageId;
-          if (eligible) {
-            if (active && isAtBottom && isFocused) {
-              nextLastReadTs = now;
-              nextLastReadId = newMessage.id;
-              nextFirstUnread = null;
-              nextUnread = 0;
-              nextMentions = 0;
-            } else {
-              if (!previous.firstUnread) nextFirstUnread = getMessageAnchor(newMessage);
-              nextUnread = previous.unreadCount + 1;
-              if (mention.matched) nextMentions = previous.mentionCount + 1;
-            }
-          }
-          const nextReadState: BufferReadState = {
-            ...previous,
-            initialized: true,
-            latestMessageTimestamp: now,
-            latestMessageId: newMessage.id,
-            unreadCount: nextUnread,
-            mentionCount: nextMentions,
-            firstUnread: nextFirstUnread,
-            lastReadTimestamp: nextLastReadTs,
-            lastReadMessageId: nextLastReadId,
-          };
-
-          return {
-            ...(active
-              ? {
-                  messages: {
-                    ...current.messages,
-                    [buffer.id]: [
-                      ...(current.messages[buffer.id] || []),
-                      newMessage,
-                    ].slice(-MAX_MESSAGES_IN_MEMORY),
-                  },
-                }
-              : {}),
-            readStates: { ...current.readStates, [buffer.key]: nextReadState },
-            messageSequences: { ...current.messageSequences, [buffer.key]: sequence },
-          };
-        });
-
-        return newMessage;
-      },
-
-      ingestIncomingDirectMessage: (buffer, member, content, fileUrl, sourceTimestamp) => {
-        const state = get();
-        const now = sourceTimestamp || new Date().toISOString();
-        const mention = findMention(
-          content,
-          state.currentProfile.name,
-          state.servers.find((server) => server.id === buffer.serverId)?.highlightKeywords || [],
-        );
-        const newMessage: DirectMessage = {
-          id: `dm-${uuidv4().slice(0, 8)}`,
-          content,
-          fileUrl: fileUrl || null,
-          memberId: member.id,
-          member,
-          conversationId: buffer.id,
-          deleted: false,
-          mention,
-          sourceTimestamp: now,
-          createdAt: now,
-          updatedAt: now,
-        };
-
-        set((current) => {
-          const previous = current.readStates[buffer.key] || emptyReadState();
-          const sequence = (current.messageSequences[buffer.key] || 0) + 1;
-          const active = current.activeChatKey === buffer.key;
-          const isAtBottom = current.viewportStates[buffer.key]?.isAtBottom === true;
-          const isFocused = isWindowFocused();
-          let nextFirstUnread = previous.firstUnread;
-          let nextUnread = previous.unreadCount;
-          let nextMentions = previous.mentionCount;
-          let nextLastReadTs: string | null = previous.lastReadTimestamp;
-          let nextLastReadId: string | undefined = previous.lastReadMessageId;
-          if (active && isAtBottom && isFocused) {
-            nextLastReadTs = now;
-            nextLastReadId = newMessage.id;
-            nextFirstUnread = null;
-            nextUnread = 0;
-            nextMentions = 0;
-          } else {
-            if (!previous.firstUnread) nextFirstUnread = getMessageAnchor(newMessage);
-            nextUnread = previous.unreadCount + 1;
-            if (mention.matched) nextMentions = previous.mentionCount + 1;
-          }
-          const nextReadState: BufferReadState = {
-            ...previous,
-            initialized: true,
-            latestMessageTimestamp: now,
-            latestMessageId: newMessage.id,
-            unreadCount: nextUnread,
-            mentionCount: nextMentions,
-            firstUnread: nextFirstUnread,
-            lastReadTimestamp: nextLastReadTs,
-            lastReadMessageId: nextLastReadId,
-          };
-
-          return {
-            ...(active
-              ? {
-                  directMessages: {
-                    ...current.directMessages,
-                    [buffer.id]: [
-                      ...(current.directMessages[buffer.id] || []),
-                      newMessage,
-                    ].slice(-MAX_MESSAGES_IN_MEMORY),
-                  },
-                }
-              : {}),
-            readStates: { ...current.readStates, [buffer.key]: nextReadState },
-            messageSequences: { ...current.messageSequences, [buffer.key]: sequence },
-          };
-        });
-
-        return newMessage;
-      },
-
-      setViewportState: (bufferKey, viewport) => {
-        set((state) => ({
-          viewportStates: {
-            ...state.viewportStates,
-            [bufferKey]: {
-              ...viewport,
-              revision: (state.viewportStates[bufferKey]?.revision || 0) + 1,
-            },
-          },
-        }));
-      },
-
-      markBufferRead: (bufferKey, reason) => {
-        set((state) => {
-          const readState = state.readStates[bufferKey];
-          if (!readState) return state;
-          if (
-            reason === "bottom"
-            && (state.activeChatKey !== bufferKey || state.viewportStates[bufferKey]?.isAtBottom !== true)
-          ) {
-            return state;
-          }
-
-          return {
-            readStates: {
-              ...state.readStates,
-              [bufferKey]: {
-                ...readState,
-                unreadCount: 0,
-                mentionCount: 0,
-                firstUnread: null,
-                lastReadTimestamp: readState.latestMessageTimestamp || readState.lastReadTimestamp,
-                lastReadMessageId: readState.latestMessageId || readState.lastReadMessageId,
-              },
-            },
-          };
-        });
-      },
-
-      clearBufferNotifications: (bufferKey) => {
-        get().markBufferRead(bufferKey, "manual");
-      },
-
-      updateUnreadProgress: (bufferKey, remainingUnread, newFirstUnread, remainingMentions) => {
-        set((state) => {
-          const rs = state.readStates[bufferKey];
-          if (!rs || rs.unreadCount === remainingUnread) return state;
-          // nie nadpisuj gdy już 0 i nie ma firstUnread
-          if (remainingUnread === 0) {
-            return {
-              readStates: {
-                ...state.readStates,
-                [bufferKey]: {
-                  ...rs,
-                  unreadCount: 0,
-                  mentionCount: 0,
-                  firstUnread: null,
-                  lastReadTimestamp: rs.latestMessageTimestamp || rs.lastReadTimestamp,
-                  lastReadMessageId: rs.latestMessageId || rs.lastReadMessageId,
-                },
-              },
-            };
-          }
-          return {
-            readStates: {
-              ...state.readStates,
-              [bufferKey]: {
-                ...rs,
-                unreadCount: remainingUnread,
-                mentionCount: remainingMentions,
-                firstUnread: newFirstUnread || rs.firstUnread,
-              },
-            },
-          };
-        });
-      },
-
-      ingestIncomingChannelBatch: (items: Array<{ buffer: BufferRef; member: Member; content: string; fileUrl?: string | null; isSystem?: boolean; timestamp?: string }>) => {
-        if (items.length === 0) return;
-        const state = get();
-        const nowMap = new Map<string, string>();
-        items.forEach((item) => {
-          if (!nowMap.has(item.buffer.key)) {
-            nowMap.set(item.buffer.key, item.timestamp || new Date().toISOString());
-          }
-        });
-
-        set((current) => {
-          const nextMessages = { ...current.messages };
-          const nextReadStates = { ...current.readStates };
-          const nextSequences = { ...current.messageSequences };
-
-          items.forEach((item) => {
-            const now = item.timestamp || nowMap.get(item.buffer.key) || new Date().toISOString();
-            const mention = !item.isSystem
-              ? findMention(
-                  item.content,
-                  current.currentProfile.name,
-                  current.servers.find((server) => server.id === item.buffer.serverId)?.highlightKeywords || [],
-                )
-              : ({ matched: false, source: null } as MentionMatch);
-            const newMessage: Message = {
-              id: `msg-${uuidv4().slice(0, 8)}`,
-              content: item.content,
-              fileUrl: item.fileUrl || null,
-              memberId: item.member.id,
-              member: item.member,
-              channelId: item.buffer.id,
-              deleted: false,
-              isSystem: item.isSystem,
-              mention,
-              sourceTimestamp: now,
-              createdAt: now,
-              updatedAt: now,
-            };
-            const active = current.activeChatKey === item.buffer.key;
-            if (active) {
-              nextMessages[item.buffer.id] = [...(nextMessages[item.buffer.id] || []), newMessage].slice(-MAX_MESSAGES_IN_MEMORY);
-            }
-            const previous = nextReadStates[item.buffer.key] || emptyReadState();
-            const eligible = !item.isSystem;
-            const isAtBottom = current.viewportStates[item.buffer.key]?.isAtBottom === true;
-            const isFocused = isWindowFocused();
-            // Google: IsAtBottom && Focused && Active -> LastAck = Nowa, divider null (auto-odczyt)
-            // !IsAtBottom -> ViewDivider bez zmian (stabilny snapshot)
-            // IsAtBottom && !Focused -> traktuj jak !IsAtBottom (wstaw divider)
-            let nextFirstUnread = previous.firstUnread;
-            let nextUnread = previous.unreadCount;
-            let nextMentions = previous.mentionCount;
-            let nextLastReadTs: string | null = previous.lastReadTimestamp;
-            let nextLastReadId: string | undefined = previous.lastReadMessageId;
-            if (eligible) {
-              if (active && isAtBottom && isFocused) {
-                // Auto-odczyt
-                nextLastReadTs = now;
-                nextLastReadId = newMessage.id;
-                nextFirstUnread = null;
-                nextUnread = 0;
-                nextMentions = 0;
-              } else {
-                // Tło lub przewinięte lub brak focusu – stabilny divider
-                if (!previous.firstUnread) nextFirstUnread = getMessageAnchor(newMessage);
-                nextUnread = previous.unreadCount + 1;
-                if (mention.matched) nextMentions = previous.mentionCount + 1;
-              }
-            }
-            nextReadStates[item.buffer.key] = {
-              ...previous,
-              initialized: true,
-              latestMessageTimestamp: now,
-              latestMessageId: newMessage.id,
-              unreadCount: nextUnread,
-              mentionCount: nextMentions,
-              firstUnread: nextFirstUnread,
-              lastReadTimestamp: nextLastReadTs,
-              lastReadMessageId: nextLastReadId,
-            };
-            nextSequences[item.buffer.key] = (nextSequences[item.buffer.key] || 0) + 1;
-          });
-
-          return {
-            messages: nextMessages,
-            readStates: nextReadStates,
-            messageSequences: nextSequences,
-          };
-        });
       },
 
       deleteMessage: (channelId, messageId) => {
@@ -1417,53 +959,12 @@ export const useMockStore = create<MockState>()(
           updatedAt: new Date().toISOString(),
         };
 
-set((state) => {
-          const serverId = member.serverId;
-          const currentConvs = serverId ? state.activeConversations[serverId] || [] : [];
-          const updatedConvs = serverId && !currentConvs.includes(member.id)
-            ? [...currentConvs, member.id]
-            : currentConvs;
-
-          return {
-            ...(state.activeChatKey === chatKey(serverId || "", "conversation", conversationId)
-              ? {
-                  directMessages: {
-                    [conversationId]: [...(state.directMessages[conversationId] || []), newDm].slice(-MAX_MESSAGES_IN_MEMORY),
-                  },
-                }
-              : {}),
-            ...(serverId
-              ? {
-                  activeConversations: {
-                    ...state.activeConversations,
-                    [serverId]: updatedConvs,
-                  },
-                }
-              : {}),
-          };
-        });
-
-        const serverId = member.serverId || "";
-        const bufferKey = getBufferKey(serverId, "conversation", conversationId);
-        const now = newDm.createdAt;
-        set((state) => {
-          const previous = state.readStates[bufferKey] || emptyReadState();
-          return {
-            readStates: {
-              ...state.readStates,
-              [bufferKey]: {
-                ...previous,
-                initialized: true,
-                latestMessageTimestamp: now,
-                latestMessageId: newDm.id,
-              },
-            },
-            messageSequences: {
-              ...state.messageSequences,
-              [bufferKey]: (state.messageSequences[bufferKey] || 0) + 1,
-            },
-          };
-        });
+        set((state) => ({
+          directMessages: {
+            ...state.directMessages,
+            [conversationId]: [...(state.directMessages[conversationId] || []), newDm].slice(-MAX_MESSAGES_IN_MEMORY),
+          },
+        }));
 
         return newDm;
       },
@@ -1481,15 +982,12 @@ set((state) => {
     }),
     {
       name: "diirc-store",
-      version: 5,
+      version: 4,
       partialize: (state) => ({
         ...state,
         messages: {},
         directMessages: {},
         activeChatKey: null,
-        readStates: state.readStates,
-        viewportStates: {},
-        messageSequences: {},
         historyLoadToken: 0,
         historyNextOffset: null,
         historyHasMore: false,
@@ -1505,9 +1003,6 @@ set((state) => {
             messages: {},
             directMessages: {},
             activeChatKey: null,
-            readStates: {},
-            viewportStates: {},
-            messageSequences: {},
             historyLoadToken: 0,
             historyNextOffset: null,
             historyHasMore: false,
@@ -1549,9 +1044,6 @@ set((state) => {
           messages: {},
           directMessages: {},
           activeChatKey: null,
-          readStates: persistedState.readStates || {},
-          viewportStates: {},
-          messageSequences: {},
           historyLoadToken: 0,
           historyNextOffset: null,
           historyHasMore: false,

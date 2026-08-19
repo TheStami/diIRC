@@ -5,7 +5,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { useMockStore } from "@/lib/mock-store";
 import { getMemberDisplayName } from "@/components/user-hover-card";
-import { getBufferKey } from "@/lib/chat-buffer";
 import { ServerHeader } from "./server-header";
 import { ServerSearch } from "./server-search";
 import { ServerSection } from "./server-section";
@@ -30,10 +29,6 @@ export const ServerSidebar = ({
   const [splitPercent, setSplitPercent] = useState(50);
   const containerRef = useRef<HTMLDivElement>(null);
   const isDraggingRef = useRef(false);
-  const channelsViewportRef = useRef<HTMLDivElement>(null);
-  const channelRefs = useRef(new Map<string, HTMLButtonElement>());
-  const [hasUnreadAbove, setHasUnreadAbove] = useState(false);
-  const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
 
   const server = servers.find((s) => s.id === serverId) || servers[0];
 
@@ -71,43 +66,6 @@ export const ServerSidebar = ({
 
   const channels = server.channels || [];
   const textChannels = channels.filter((channel) => channel.type === ChannelType.TEXT);
-  const readStates = useMockStore((state) => state.readStates);
-  const textChannelIds = textChannels.map((channel) => channel.id).join(",");
-
-  useEffect(() => {
-    const viewport = channelsViewportRef.current;
-    if (!viewport) return;
-    let frame: number | null = null;
-    const updateEdges = () => {
-      if (frame !== null) return;
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        const viewportRect = viewport.getBoundingClientRect();
-        let above = false;
-        let below = false;
-        textChannels.forEach((channel) => {
-          const state = readStates[getBufferKey(server.id, "channel", channel.id)];
-          if (!state?.unreadCount) return;
-          const element = channelRefs.current.get(channel.id);
-          if (!element) return;
-          const rect = element.getBoundingClientRect();
-          if (rect.bottom <= viewportRect.top) above = true;
-          if (rect.top >= viewportRect.bottom) below = true;
-        });
-        setHasUnreadAbove(above);
-        setHasUnreadBelow(below);
-      });
-    };
-    viewport.addEventListener("scroll", updateEdges, { passive: true });
-    const observer = new ResizeObserver(updateEdges);
-    observer.observe(viewport);
-    updateEdges();
-    return () => {
-      viewport.removeEventListener("scroll", updateEdges);
-      observer.disconnect();
-      if (frame !== null) cancelAnimationFrame(frame);
-    };
-  }, [readStates, server.id, textChannelIds]);
 
   const currentMember = server.members.find(
     (m) =>
@@ -138,13 +96,8 @@ export const ServerSidebar = ({
 
       <div ref={containerRef} className="flex flex-col flex-1 overflow-hidden relative">
         {/* Top Section: Channels */}
-        <div style={{ height: `${splitPercent}%` }} className="flex flex-col min-h-0 relative">
-          {hasUnreadAbove && (
-            <div className="pointer-events-none absolute inset-x-0 top-0 z-20 bg-rose-600/90 py-1 text-center text-[10px] font-bold text-white">
-              Nieprzeczytane wyżej
-            </div>
-          )}
-          <ScrollArea viewportRef={channelsViewportRef} className="flex-1 px-3">
+        <div style={{ height: `${splitPercent}%` }} className="flex flex-col min-h-0">
+          <ScrollArea className="flex-1 px-3">
             <div className="mt-2">
               <ServerSearch
                 serverId={server.id}
@@ -196,21 +149,12 @@ export const ServerSidebar = ({
                       key={channel.id}
                       channel={channel}
                       server={server}
-                      itemRef={(element) => {
-                        if (element) channelRefs.current.set(channel.id, element);
-                        else channelRefs.current.delete(channel.id);
-                      }}
                     />
                   ))}
                 </div>
               </div>
             ))}
           </ScrollArea>
-          {hasUnreadBelow && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-rose-600/90 py-1 text-center text-[10px] font-bold text-white">
-              Nieprzeczytane niżej
-            </div>
-          )}
         </div>
 
         {/* Draggable Divider Handle */}
