@@ -46,7 +46,8 @@ export const useConnectionStatus = (): ConnectionStatuses => {
 
     const checkResourceServer = async () => {
       if (uploadConfig.provider === "disabled") {
-        if (isMounted) setIsResourceServerConnected(false);
+        // No upload provider means the application has no resource-server dependency.
+        if (isMounted) setIsResourceServerConnected(true);
         return;
       }
 
@@ -57,13 +58,14 @@ export const useConnectionStatus = (): ConnectionStatuses => {
         checkUrl = uploadConfig.pomfUrl;
       }
 
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-        // Perform a lightweight fetch (mode no-cors allows checking domain connectivity)
+      try {
+
+        // GET is more widely supported than HEAD by upload hosts and WebView2.
         await fetch(checkUrl, {
-          method: "HEAD",
+          method: "GET",
           mode: "no-cors",
           signal: controller.signal,
         });
@@ -71,6 +73,7 @@ export const useConnectionStatus = (): ConnectionStatuses => {
         clearTimeout(timeoutId);
         if (isMounted) setIsResourceServerConnected(true);
       } catch (error) {
+        clearTimeout(timeoutId);
         if (isMounted) setIsResourceServerConnected(false);
       }
     };

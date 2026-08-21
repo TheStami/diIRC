@@ -6,6 +6,7 @@ import { useModal } from "@/hooks/use-modal-store";
 import { ImageContextMenu } from "@/components/image-context-menu";
 import { openExternalUrl } from "@/lib/system-utils";
 import { SmartImage } from "@/components/chat/smart-image";
+import { LazyYouTubeEmbed } from "@/components/chat/youtube-embed";
 
 interface LinkPreviewProps {
   url: string;
@@ -20,15 +21,38 @@ interface OpenGraphData {
   logo?: string;
 }
 
-// In-memory cache for fetched OpenGraph metadata to avoid duplicate network calls
+// Bounded LRU cache for OpenGraph metadata (prevents unbounded RAM growth)
+const MAX_OG_CACHE = 80;
 const ogCache = new Map<string, OpenGraphData | null>();
+
+function setOgCache(url: string, data: OpenGraphData | null) {
+  if (ogCache.has(url)) ogCache.delete(url);
+  ogCache.set(url, data);
+  if (ogCache.size > MAX_OG_CACHE) {
+    const first = ogCache.keys().next().value as string | undefined;
+    if (first !== undefined) ogCache.delete(first);
+  }
+}
+
+function getOgCache(url: string): OpenGraphData | null | undefined {
+  const v = ogCache.get(url);
+  if (v !== undefined) {
+    ogCache.delete(url);
+    ogCache.set(url, v);
+  }
+  return v;
+}
+
+export function clearOgCache() {
+  ogCache.clear();
+}
 
 export const LinkPreview: React.FC<LinkPreviewProps> = ({ url, onContentSizeChange }) => {
   const { onOpen } = useModal();
   const linkPreviewApiUrl = useMockStore((state) => state.linkPreviewApiUrl);
   const enableWebPagePreviews = useMockStore((state) => state.enableWebPagePreviews);
 
-  const [ogData, setOgData] = useState<OpenGraphData | null>(ogCache.get(url) || null);
+  const [ogData, setOgData] = useState<OpenGraphData | null>(getOgCache(url) ?? null);
   const [loading, setLoading] = useState<boolean>(!ogCache.has(url));
   const [error, setError] = useState<boolean>(false);
   const [dynamicIsImage, setDynamicIsImage] = useState<boolean>(isImageUrl(url));
@@ -89,19 +113,20 @@ export const LinkPreview: React.FC<LinkPreviewProps> = ({ url, onContentSizeChan
     }
 
     if (ogCache.has(url)) {
-      setOgData(ogCache.get(url) || null);
+      setOgData(getOgCache(url) ?? null);
       setLoading(false);
       return;
     }
 
     let isMounted = true;
+    const controller = new AbortController();
     setLoading(true);
 
     const fetchMetadata = async () => {
       try {
         const baseUrl = (linkPreviewApiUrl || "https://api.microlink.io").replace(/\/$/, "");
         const requestUrl = `${baseUrl}?url=${encodeURIComponent(url)}`;
-        const res = await fetch(requestUrl);
+        const res = await fetch(requestUrl, { signal: controller.signal });
 
         if (!res.ok) {
           throw new Error(`HTTP error! status: ${res.status}`);
@@ -131,13 +156,14 @@ export const LinkPreview: React.FC<LinkPreviewProps> = ({ url, onContentSizeChan
         }
 
         if (isMounted) {
-          ogCache.set(url, extracted);
+          setOgCache(url, extracted);
           setOgData(extracted);
           setLoading(false);
         }
       } catch (err) {
         if (isMounted) {
-          ogCache.set(url, null);
+          if ((err as any)?.name === "AbortError") return;
+          setOgCache(url, null);
           setError(true);
           setLoading(false);
         }
@@ -148,6 +174,7 @@ export const LinkPreview: React.FC<LinkPreviewProps> = ({ url, onContentSizeChan
 
     return () => {
       isMounted = false;
+      controller.abort();
     };
   }, [url, linkPreviewApiUrl, isDirectImage, isDirectVideo, youtubeId]);
 
@@ -178,35 +205,22 @@ export const LinkPreview: React.FC<LinkPreviewProps> = ({ url, onContentSizeChan
   // B) Render Direct Video Preview
   if (isDirectVideo) {
     return (
-      <div className="mt-2 max-w-md rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-black">
+      <div className="mt-2 max-w-md w-full aspect-video rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-black flex items-center justify-center">
         <video
           src={url}
           controls
-          className="max-h-[320px] w-full rounded-lg"
+          className="max-h-[320px] w-full h-full object-contain rounded-lg"
           preload="metadata"
           onLoadedMetadata={onContentSizeChange}
-          onLoadedData={onContentSizeChange}
         />
       </div>
     );
   }
 
-  // C) Render YouTube Responsive Player
+  // C) Render YouTube Lazy Facade (IntersectionObserver + click-to-load)
+  // Replaces eager iframe which caused scroll jank with many embeds. See youtube-embed.tsx
   if (youtubeId) {
-    return (
-      <div className="mt-2 max-w-md rounded-lg overflow-hidden border border-zinc-200 dark:border-zinc-800 bg-black shadow-md">
-        <div className="relative w-full pt-[56.25%]">
-          <iframe
-            src={`https://www.youtube.com/embed/${youtubeId}`}
-            title="YouTube video player"
-            className="absolute top-0 left-0 w-full h-full border-0 rounded-lg"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-            onLoad={onContentSizeChange}
-          />
-        </div>
-      </div>
-    );
+    return <LazyYouTubeEmbed youtubeId={youtubeId} onContentSizeChange={onContentSizeChange} />;
   }
 
   // D) Render Skeleton Loader for Web Page Preview

@@ -26,6 +26,7 @@ import {
   ShieldCheck,
   Activity,
   Command,
+  FileText,
   LogOut,
   Calendar
 } from "lucide-react";
@@ -47,6 +48,9 @@ export const SettingsModal = () => {
 
   const enableWebPagePreviews = useMockStore((state) => state.enableWebPagePreviews);
   const setEnableWebPagePreviews = useMockStore((state) => state.setEnableWebPagePreviews);
+
+  const enableMarkdown = useMockStore((state) => state.enableMarkdown ?? true);
+  const setEnableMarkdown = useMockStore((state) => state.setEnableMarkdown);
 
   const linkPreviewApiUrl = useMockStore((state) => state.linkPreviewApiUrl);
   const setLinkPreviewApiUrl = useMockStore((state) => state.setLinkPreviewApiUrl);
@@ -165,6 +169,25 @@ export const SettingsModal = () => {
             <Switch
               checked={enableCommandSuggestions}
               onCheckedChange={(checked) => setEnableCommandSuggestions(checked)}
+            />
+          </div>
+
+          {/* Markdown Rendering */}
+          <div className="flex flex-row items-center justify-between rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-zinc-50 dark:bg-[#2b2d31] p-4 shadow-sm transition">
+            <div className="space-y-0.5 pr-4">
+              <div className="flex items-center gap-x-2">
+                <FileText className="w-4 h-4 text-indigo-500 dark:text-indigo-400" />
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 cursor-pointer">
+                  Markdown rendering
+                </label>
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                Render <span className="font-mono">**bold**</span> <span className="font-mono">*italic*</span> <span className="font-mono">__underline__</span> <span className="font-mono">~~strike~~</span> <span className="font-mono">`code`</span> <span className="font-mono">```block```</span> <span className="font-mono">&gt;quote</span> <span className="font-mono">||spoiler||</span> and links.
+              </p>
+            </div>
+            <Switch
+              checked={enableMarkdown}
+              onCheckedChange={(checked) => setEnableMarkdown(checked)}
             />
           </div>
 

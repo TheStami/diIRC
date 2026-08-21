@@ -100,6 +100,8 @@ struct LogEntry {
     timestamp: String,
     sender: String,
     content: String,
+    #[serde(default)]
+    offset: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -107,6 +109,8 @@ struct LogEntry {
 struct LogPage {
     entries: Vec<LogEntry>,
     next_offset: Option<u64>,
+    #[serde(default)]
+    next_after: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -242,6 +246,7 @@ fn parse_log_line(line: &str) -> Option<LogEntry> {
         timestamp,
         sender,
         content,
+        offset: 0,
     })
 }
 
@@ -266,6 +271,7 @@ async fn read_log_page(
             return Ok(LogPage {
                 entries: Vec::new(),
                 next_offset: None,
+                next_after: None,
             })
         }
         Err(error) => return Err(format!("Failed to open log file: {error}")),
@@ -281,6 +287,7 @@ async fn read_log_page(
         return Ok(LogPage {
             entries: Vec::new(),
             next_offset: None,
+            next_after: None,
         });
     }
 
@@ -329,7 +336,8 @@ async fn read_log_page(
         }
     }
 
-    let start = lines.len().saturating_sub(100);
+    const PAGE_LINES: usize = 100;
+    let start = lines.len().saturating_sub(PAGE_LINES);
     let selected = &lines[start..];
     let next_offset = selected
         .first()
@@ -339,9 +347,15 @@ async fn read_log_page(
     Ok(LogPage {
         entries: selected
             .iter()
-            .filter_map(|(_, line)| parse_log_line(line))
+            .filter_map(|(offset, line)| {
+                parse_log_line(line).map(|mut entry| {
+                    entry.offset = *offset;
+                    entry
+                })
+            })
             .collect(),
         next_offset,
+        next_after: None,
     })
 }
 
@@ -360,8 +374,126 @@ async fn load_log_page(
     server_id: String,
     channel: String,
     before: Option<u64>,
+    after: Option<u64>,
 ) -> Result<LogPage, String> {
-    read_log_page(&app, &server_id, &channel, before).await
+    if let Some(after_offset) = after {
+        read_log_page_forward(&app, &server_id, &channel, after_offset).await
+    } else {
+        read_log_page(&app, &server_id, &channel, before).await
+    }
+}
+
+/// Reads up to 100 log lines *strictly after* the given byte offset (line start),
+/// continuing forward. Returns `next_after` so the next page can continue from
+/// where this one stopped.
+async fn read_log_page_forward(
+    app: &AppHandle,
+    server_id: &str,
+    target: &str,
+    after: u64,
+) -> Result<LogPage, String> {
+    let (_, path) = log_path(app, server_id, target)?;
+    let mut file = match File::open(path).await {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LogPage {
+                entries: Vec::new(),
+                next_offset: None,
+                next_after: None,
+            })
+        }
+        Err(error) => return Err(format!("Failed to open log file: {error}")),
+    };
+
+    let file_size = file
+        .metadata()
+        .await
+        .map_err(|error| format!("Failed to read log metadata: {error}"))?
+        .len();
+    // Sip over the (partial) line that starts exactly at `after`, then collect
+    // full lines that begin after it.
+    if after >= file_size {
+        return Ok(LogPage {
+            entries: Vec::new(),
+            next_offset: None,
+            next_after: None,
+        });
+    }
+    file.seek(SeekFrom::Start(after)).await
+        .map_err(|error| format!("Failed to seek log file: {error}"))?;
+
+    const PAGE_LINES: usize = 100;
+    const CHUNK_SIZE: usize = 8192;
+    let mut lines: Vec<(u64, String)> = Vec::new();
+    let mut partial: Vec<u8> = Vec::new();
+    let mut line_offset = after;
+    let mut skip_current_line = true; // the line beginning at `after` belongs to the previous page
+    let mut cursor = after;
+    let mut chunk = vec![0u8; CHUNK_SIZE];
+
+    'outer: loop {
+        let n = file.read(&mut chunk).await
+            .map_err(|error| format!("Failed to read log file: {error}"))?;
+        if n == 0 {
+            break 'outer;
+        }
+        let mut i = 0usize;
+        while i < n {
+            let byte = chunk[i];
+            i += 1;
+            if byte == b'\n' {
+                if !skip_current_line {
+                    if let Ok(line) = std::str::from_utf8(&partial) {
+                        let line_str = line.trim_end_matches('\r').to_string();
+                        if !line_str.is_empty() {
+                            lines.push((line_offset, line_str));
+                            if lines.len() >= PAGE_LINES {
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+                partial.clear();
+                line_offset = cursor + i as u64;
+                skip_current_line = false;
+            } else {
+                partial.push(byte);
+            }
+        }
+        cursor += n as u64;
+    }
+
+    if !skip_current_line && !partial.is_empty() {
+        if let Ok(line) = std::str::from_utf8(&partial) {
+            let line_str = line.trim_end_matches('\r').to_string();
+            if !line_str.is_empty() {
+                lines.push((line_offset, line_str));
+            }
+        }
+    }
+
+    let next_after = if lines.len() >= PAGE_LINES {
+        lines
+            .last()
+            .map(|(offset, _)| *offset)
+            .filter(|offset| *offset < file_size)
+    } else {
+        None
+    };
+
+    Ok(LogPage {
+        entries: lines
+            .iter()
+            .filter_map(|(offset, line)| {
+                parse_log_line(line).map(|mut entry| {
+                    entry.offset = *offset;
+                    entry
+                })
+            })
+            .collect(),
+        next_offset: None,
+        next_after,
+    })
 }
 
 #[tauri::command]
@@ -1672,6 +1804,14 @@ pub fn run() {
             fetch_image_proxy
         ])
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+                #[cfg(debug_assertions)]
+                {
+                    window.open_devtools();
+                }
+            }
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()

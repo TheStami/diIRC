@@ -56,6 +56,8 @@ export interface Message {
   isSystem?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Byte offset in the native log (windowed pagination). */
+  offset?: number;
 }
 
 export interface DirectMessage {
@@ -69,17 +71,51 @@ export interface DirectMessage {
   isSystem?: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Byte offset in the native log (windowed pagination). */
+  offset?: number;
 }
 
 export interface LogEntry {
   timestamp: string;
   sender: string;
   content: string;
+  /** Byte offset of the line start in the native log file (used for windowed pagination). */
+  offset?: number;
 }
 
 export interface LogPage {
   entries: LogEntry[];
   nextOffset: number | null;
+  /** Forward-pagination cursor: offset of the last returned line (continue from here). */
+  nextAfter?: number | null;
+}
+
+/**
+ * Sliding window state for the single rendered chat (transient, never persisted).
+ *
+ * The native append-only log is the source of truth; the window holds at most
+ * `MAX_HISTORY_WINDOW` items in memory, slides backward via `olderCursor`
+ * (`load_log_page` with `before`) and forward via `newerCursor` (`after`), and
+ * queues offsetless live messages in `pendingLive` while the user reads history.
+ */
+export interface HistoryWindow {
+  key: string | null;
+  serverId: string | null;
+  type: "channel" | "conversation" | null;
+  chatId: string | null;
+  target: string | null;
+  /** Next `before` cursor for backward pagination. */
+  olderCursor: number | null;
+  /** Next `after` cursor for forward pagination. */
+  newerCursor: number | null;
+  hasOlder: boolean;
+  hasNewer: boolean;
+  loadingOlder: boolean;
+  loadingNewer: boolean;
+  /** Offsetless live messages received while reading history (bounded). */
+  pendingLive: (Message | DirectMessage)[];
+  /** True once the initial tail page is loaded or failed. */
+  ready: boolean;
 }
 
 export interface Conversation {
@@ -113,5 +149,7 @@ export interface Server {
 }
 
 export type ServerWithMembersWithProfiles = Server;
+
+export type StatusDisplayMode = "always" | "on_error" | "disabled";
 
 

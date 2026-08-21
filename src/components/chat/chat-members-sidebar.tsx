@@ -112,7 +112,7 @@ export const ChatMembersSidebar = ({
   };
 
   return (
-    <div className="h-full w-60 bg-[#F2F3F5] dark:bg-[#2B2D31] flex flex-col pt-4 px-2 overflow-y-auto hidden md:flex shrink-0 border-l border-zinc-200 dark:border-zinc-800">
+    <div className="h-full w-60 bg-[#F2F3F5] dark:bg-[#2B2D31] flex flex-col pt-4 px-2 overflow-y-auto overflow-x-hidden discord-scrollbar-ghost hidden md:flex shrink-0 border-l border-zinc-200 dark:border-zinc-800">
       <div className="mb-6">
         <h3 className="uppercase text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2 px-2">
           Users — {totalCount}

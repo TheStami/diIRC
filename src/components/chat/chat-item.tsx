@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { Member, Profile } from "@/types";
 import { Reply } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -13,6 +13,8 @@ import { LinkPreview } from "./link-preview";
 
 import { isMediaUrl, subscribeImageCache } from "@/lib/image-utils";
 import { openExternalUrl } from "@/lib/system-utils";
+import { MarkdownRenderer } from "@/lib/markdown/markdown-renderer";
+import { extractUrlsFromMarkdownText, stripTrailingPunct, hasMarkdownSyntax } from "@/lib/markdown/markdown-utils";
 
 interface ChatItemProps {
   id: string;
@@ -33,7 +35,7 @@ interface ChatItemProps {
 }
 
 
-export const ChatItem = ({
+const ChatItemInner = ({
   id,
   content,
   member,
@@ -53,6 +55,7 @@ export const ChatItem = ({
 
   const compactMode = useMockStore((state) => state.compactMode);
   const enableLinkPreviews = useMockStore((state) => state.enableLinkPreviews);
+  const enableMarkdown = useMockStore((state) => state.enableMarkdown ?? true);
 
   const [, setCacheTick] = useState(0);
   useEffect(() => {
@@ -123,14 +126,56 @@ export const ChatItem = ({
 
   // Check if there is any visible text remaining after hiding image URLs
   const textToEvaluate = isAction ? actionText : content;
-  const renderedElements = renderContentWithLinks(textToEvaluate);
-  const hasVisibleText = Array.isArray(renderedElements)
-    ? renderedElements.some((item) => item !== null && typeof item === "string" ? item.trim().length > 0 : item !== null)
-    : Boolean(renderedElements);
 
-  const extractedUrls = enableLinkPreviews && !deleted && !fileUrl
-    ? Array.from(new Set(textToEvaluate.match(urlRegex) || []))
-    : [];
+  // Markdown vs legacy rendering — only when markdown chars present
+  const shouldUseMarkdown = enableMarkdown && !deleted && !isSystem && !isAction && hasMarkdownSyntax(textToEvaluate);
+
+  let renderedElements: any = null;
+  let hasVisibleText = false;
+  let extractedUrls: string[] = [];
+
+  if (shouldUseMarkdown) {
+    // Extract URLs excluding code blocks/inline code
+    const markdownUrls = enableLinkPreviews && !fileUrl ? extractUrlsFromMarkdownText(textToEvaluate) : [];
+    extractedUrls = markdownUrls;
+    // Determine visible text after stripping media URLs (if previews enabled)
+    const trimmed = textToEvaluate.trim();
+    if (trimmed.length === 0) {
+      hasVisibleText = false;
+    } else if (enableLinkPreviews && extractedUrls.length === 1 && trimmed === extractedUrls[0] && isMediaUrl(extractedUrls[0])) {
+      // Single media URL only — hide markdown text (preview will show)
+      hasVisibleText = false;
+    } else if (enableLinkPreviews) {
+      // Check if remaining text after removing media URLs is non-empty
+      let stripped = textToEvaluate;
+      extractedUrls.forEach((u) => {
+        if (isMediaUrl(u)) stripped = stripped.split(u).join(" ");
+      });
+      // Also strip code blocks for visibility check? Keep as visible
+      hasVisibleText = stripped.trim().length > 0;
+      // If stripped is empty but there were non-media URLs, still visible (markdown links)
+      if (!hasVisibleText && extractedUrls.some((u) => !isMediaUrl(u))) {
+        hasVisibleText = true;
+      }
+      // If no media urls, default to true if trimmed not empty
+      if (extractedUrls.length === 0) hasVisibleText = trimmed.length > 0;
+    } else {
+      hasVisibleText = trimmed.length > 0;
+    }
+    // For markdown we don't need renderedElements array, but keep flag
+    renderedElements = hasVisibleText ? true : null;
+  } else {
+    renderedElements = renderContentWithLinks(textToEvaluate);
+    hasVisibleText = Array.isArray(renderedElements)
+      ? renderedElements.some((item) => item !== null && typeof item === "string" ? item.trim().length > 0 : item !== null)
+      : Boolean(renderedElements);
+    extractedUrls = enableLinkPreviews && !deleted && !fileUrl
+      ? Array.from(new Set(textToEvaluate.match(urlRegex) || []))
+      : [];
+    if (extractedUrls.length > 0) {
+      extractedUrls = Array.from(new Set(extractedUrls.map((u: string) => stripTrailingPunct(u))));
+    }
+  }
 
   const servers = useMockStore((state) => state.servers);
   const activeServer = servers.find((s) => s.id === params?.serverId) || servers[0];
@@ -156,7 +201,7 @@ export const ChatItem = ({
   return (
     <div className={cn(
       "relative group flex items-center hover:bg-black/5 px-4 transition w-full",
-      compact ? "py-[2px]" : "pt-3 pb-[2px] mt-2"
+      compact ? "py-[2px]" : "pt-2.5 pb-[2px]"
     )}>
       <div className="group flex gap-x-2 items-start w-full">
         {!compactMode && !compact ? (
@@ -211,6 +256,13 @@ export const ChatItem = ({
                     </UserHoverCard>
                     <span>{renderContentWithLinks(actionText)}</span>
                   </p>
+                ) : shouldUseMarkdown ? (
+                  <div className={cn(
+                    "text-sm text-zinc-600 dark:text-zinc-300",
+                    deleted && "italic text-zinc-500 dark:text-zinc-400 text-xs mt-1"
+                  )}>
+                    <MarkdownRenderer content={content} onContentSizeChange={onContentSizeChange} compact={compact} />
+                  </div>
                 ) : (
                   <p className={cn(
                     "text-sm text-zinc-600 dark:text-zinc-300",
@@ -242,3 +294,16 @@ export const ChatItem = ({
   );
 };
 
+export const ChatItem = memo(ChatItemInner, (prev, next) =>
+  prev.id === next.id &&
+  prev.content === next.content &&
+  prev.deleted === next.deleted &&
+  prev.fileUrl === next.fileUrl &&
+  prev.isSystem === next.isSystem &&
+  prev.compact === next.compact &&
+  prev.timestamp === next.timestamp &&
+  prev.compactTime === next.compactTime &&
+  prev.member?.id === next.member?.id &&
+  prev.currentMember?.id === next.currentMember?.id &&
+  prev.onContentSizeChange === next.onContentSizeChange
+);

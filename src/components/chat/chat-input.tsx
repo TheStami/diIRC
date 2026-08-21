@@ -14,7 +14,7 @@ import {
   FormField,
   FormItem,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useModal } from "@/hooks/use-modal-store";
 import { EmojiPicker } from "@/components/emoji-picker";
 import { Member } from "@/types";
@@ -61,6 +61,7 @@ export const ChatInput = ({
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(initialDraft.attachedImages || []);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const [commandQuery, setCommandQuery] = useState("");
   const [showCommands, setShowCommands] = useState(false);
@@ -238,7 +239,7 @@ export const ChatInput = ({
 
     try {
       const fileBytes = await readFile(filePath);
-      const fileName = filePath.split("/").pop() || "file";
+      const fileName = filePath.split(/[/\\]/).pop() || "file";
       const ext = fileName.split(".").pop()?.toLowerCase() || "";
       const mimeMap: Record<string, string> = {
         png: "image/png",
@@ -404,23 +405,51 @@ export const ChatInput = ({
     setShowCommands(false);
   };
 
-  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (showCommands && filteredCommands.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setSelectedCommandIndex((prev) => (prev + 1) % filteredCommands.length);
+        return;
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
         setSelectedCommandIndex((prev) => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
       } else if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
         onCommandSelect(filteredCommands[selectedCommandIndex].name);
+        return;
       } else if (e.key === "Escape") {
         e.preventDefault();
         setShowCommands(false);
+        return;
       }
     }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      const hasText = Boolean((form.getValues("content") || "").trim());
+      const hasReadyImage = attachedImages.some((img) => !img.isUploading && img.url);
+      if (!hasText && !hasReadyImage) {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      form.handleSubmit(onSubmit)();
+      return;
+    }
   };
+
+  const autoResize = useCallback(() => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const newHeight = Math.min(ta.scrollHeight, 120);
+    ta.style.height = `${newHeight}px`;
+  }, []);
+
+  useEffect(() => {
+    autoResize();
+  }, [content, autoResize]);
 
   const onSubmit = async (values: z.infer<typeof formSchema>) => {
     const textContent = values.content?.trim() || "";
@@ -479,7 +508,6 @@ export const ChatInput = ({
         });
 
         if (isHandled) {
-          // Send attached images if any were queued alongside slash command
           for (const img of readyImages) {
             if (img.url) {
               if (type === "channel" && query?.channelId) {
@@ -550,7 +578,7 @@ export const ChatInput = ({
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)}>
+      <form onSubmit={form.handleSubmit(onSubmit)} autoComplete="off">
         <input
           ref={fileInputRef}
           type="file"
@@ -652,11 +680,11 @@ export const ChatInput = ({
                     </div>
                   )}
 
-                  <div className="relative flex items-center">
-                    <Input
-                      disabled={isLoading}
+                  <div className="relative flex flex-col">
+                    <Textarea
+                      disabled={(isLoading && attachedImages.length === 0) || !isIrcConnected || isMuted}
                       autoFocus
-                      className="pl-4 pr-24 py-6 bg-zinc-200/90 dark:bg-zinc-700/75 border-none border-0 focus-visible:ring-0 focus-visible:ring-offset-0 text-zinc-600 dark:text-zinc-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                      className="min-h-[44px] max-h-[120px] w-full bg-zinc-200/90 dark:bg-zinc-700/75 border-none focus-visible:ring-0 focus-visible:ring-offset-0 text-zinc-600 dark:text-zinc-200 placeholder:text-zinc-500 dark:placeholder:text-zinc-400 py-3 pr-24 resize-none overflow-y-auto disabled:opacity-60 disabled:cursor-not-allowed"
                       placeholder={
                         !isIrcConnected
                           ? "Disconnected from IRC server"
@@ -666,13 +694,20 @@ export const ChatInput = ({
                           ? "Uploading files..."
                           : `Message ${type === "conversation" ? name : "#" + name}`
                       }
+                      rows={1}
                       {...field}
+                      ref={(e) => {
+                        field.ref(e);
+                        // @ts-ignore
+                        textareaRef.current = e;
+                      }}
                       onFocus={() => setIsFocused(true)}
                       onBlur={() => setIsFocused(false)}
                       onKeyDown={handleInputKeyDown}
+                      onInput={autoResize}
                     />
 
-                    <div className="absolute right-4 z-10 flex items-center gap-x-2">
+                    <div className="absolute right-3 bottom-3 z-10 flex items-center gap-x-2">
                       <button
                         type="button"
                         disabled={isLoading}
@@ -711,5 +746,3 @@ export const ChatInput = ({
     </Form>
   );
 };
-
-
