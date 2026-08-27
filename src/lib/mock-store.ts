@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage, StateStorage } from "zustand/middleware";
 import { invoke } from "@tauri-apps/api/core";
 import { format } from "date-fns";
 import { 
@@ -58,8 +58,7 @@ export function getServerSelfMember(server: Server, currentProfileId?: string): 
       (server.nicknames && server.nicknames.some((n) => n.toLowerCase() === m.profile?.name?.toLowerCase()))
   );
   return (
-    currentMember ||
-    server.members[0] || {
+    currentMember || {
       id: `${server.id}:self`,
       profileId: currentProfileId || "self",
       profile: {
@@ -224,6 +223,8 @@ const mapLogEntries = (
     ? `log-${serverId}-${chatId}-${entry.offset}`
     : `log-${serverId}-${chatId}-${entry.timestamp}-${entry.sender}`;
 
+  const isSystem = entry.sender === "System" || entry.sender === "***" || !entry.sender || !entry.sender.trim();
+
   return {
     id: stableId,
     offset: entry.offset,
@@ -233,6 +234,7 @@ const mapLogEntries = (
     member,
     channelId: type === "channel" ? chatId : undefined,
     conversationId: type === "conversation" ? chatId : undefined,
+    isSystem,
     deleted: false,
     createdAt,
     updatedAt: createdAt,
@@ -425,8 +427,338 @@ interface MockState {
   addDirectMessage: (conversationId: string, member: Member, content: string, fileUrl?: string | null, isSystem?: boolean, createdAt?: string) => DirectMessage;
   removeLastMessageFromChannel: (channelId: string, memberId: string) => string | null;
   removeLastDirectMessageFromMember: (conversationId: string, memberId: string) => string | null;
-  deleteDirectMessage: (conversationId: string, messageId: string) => void;
 }
+
+export function serializeStateToTomlJson(state: any) {
+  if (!state) return {};
+  const serversDict: Record<string, any> = {};
+
+  if (Array.isArray(state.servers)) {
+    state.servers.forEach((s: any) => {
+      const serverKey = s.id || `server_${Math.random().toString(36).substring(2, 8)}`;
+      const channelsDict: Record<string, any> = {};
+
+      if (Array.isArray(s.channels)) {
+        s.channels.forEach((c: any) => {
+          if (c.isTemporary) return;
+          const channelKey = c.name.startsWith("#") ? c.name : `#${c.name}`;
+          const channelData: any = {};
+          if (c.topic) channelData.topic = c.topic;
+          if (c.key) channelData.key = c.key;
+          if (c.notificationSettings) channelData.notificationSettings = c.notificationSettings;
+
+          if (Object.keys(channelData).length > 0) {
+            channelsDict[channelKey] = channelData;
+          }
+        });
+      }
+
+      const serverData: any = {
+        name: s.name,
+        host: s.host,
+        port: s.port,
+        useTls: s.useTls,
+        nicknames: s.nicknames,
+        autoJoinChannels: (s.autoJoinChannels || []).map((c: string) => (c.startsWith("#") ? c : `#${c}`)),
+      };
+
+      if (s.imageUrl) serverData.imageUrl = s.imageUrl;
+      if (s.inviteCode) serverData.inviteCode = s.inviteCode;
+      if (s.profileId) serverData.profileId = s.profileId;
+      if (s.realname) serverData.realname = s.realname;
+      if (s.password) serverData.password = s.password;
+      if (s.autoConnect !== undefined) serverData.autoConnect = s.autoConnect;
+      if (s.autoReconnect !== undefined) serverData.autoReconnect = s.autoReconnect;
+      if (Array.isArray(s.customCommands) && s.customCommands.length > 0) {
+        serverData.customCommands = s.customCommands;
+      }
+      if (s.notificationSettings) {
+        serverData.notificationSettings = s.notificationSettings;
+      }
+      if (Object.keys(channelsDict).length > 0) {
+        serverData.channels = channelsDict;
+      }
+
+      serversDict[serverKey] = serverData;
+    });
+  }
+
+  const result: any = {
+    preferences: {
+      compactMode: state.compactMode ?? false,
+      enableMarkdown: state.enableMarkdown ?? true,
+      confirmLeaveChannel: state.confirmLeaveChannel ?? true,
+      enableCommandSuggestions: state.enableCommandSuggestions ?? true,
+      enableLinkPreviews: state.enableLinkPreviews ?? true,
+      enableWebPagePreviews: state.enableWebPagePreviews ?? true,
+      linkPreviewApiUrl: state.linkPreviewApiUrl ?? "",
+      statusDisplayMode: state.statusDisplayMode ?? "compact",
+      dateFormatPreset: state.dateFormatPreset ?? "d MMM yyyy, HH:mm",
+      customDateFormat: state.customDateFormat ?? "",
+      autoUpdateMode: state.autoUpdateMode ?? "ask",
+      sortDmByUnread: state.sortDmByUnread ?? false,
+      dmSortOrder: state.dmSortOrder ?? "opening",
+    },
+    uploadConfig: state.uploadConfig || { provider: "disabled" },
+    notificationSettings: state.notificationSettings || {
+      soundEnabled: true,
+      soundPreset: "chime",
+      dmSoundPreset: "bell",
+      soundCooldownMs: 1000,
+      popupEnabled: true,
+      taskbarHighlightEnabled: true,
+      channelNotifications: "all",
+      dmNotifications: "all",
+    },
+    servers: serversDict,
+  };
+
+  if (Array.isArray(state.urlAuthRules) && state.urlAuthRules.length > 0) {
+    result.urlAuthRules = state.urlAuthRules;
+  }
+  if (state.conversationNotificationSettings && Object.keys(state.conversationNotificationSettings).length > 0) {
+    result.conversationNotificationSettings = state.conversationNotificationSettings;
+  }
+  if (state.serverMotdPolicies && Object.keys(state.serverMotdPolicies).length > 0) {
+    result.serverMotdPolicies = state.serverMotdPolicies;
+  }
+  if (state.serverMotdSeenHashes && Object.keys(state.serverMotdSeenHashes).length > 0) {
+    result.serverMotdSeenHashes = state.serverMotdSeenHashes;
+  }
+
+  return result;
+}
+
+export function deserializeTomlJsonToState(tomlJson: any) {
+  if (!tomlJson) return null;
+
+  const preferences = tomlJson.preferences || {};
+  const serversRaw = tomlJson.servers || {};
+  const serversArray: any[] = [];
+
+  if (Array.isArray(serversRaw)) {
+    serversRaw.forEach((s: any, idx: number) => {
+      const serverId = s.id || `server_${idx + 1}`;
+      const rawAutoJoin: string[] = Array.isArray(s.autoJoinChannels) ? s.autoJoinChannels : [];
+      serversArray.push({
+        id: serverId,
+        name: s.name || serverId,
+        imageUrl: s.imageUrl || "",
+        inviteCode: s.inviteCode || serverId,
+        profileId: s.profileId || "profile-user-1",
+        host: s.host || "127.0.0.1",
+        port: s.port || 6667,
+        useTls: s.useTls ?? false,
+        nicknames: s.nicknames || ["ReactUser"],
+        realname: s.realname,
+        password: s.password,
+        autoConnect: s.autoConnect,
+        autoReconnect: s.autoReconnect,
+        autoJoinChannels: rawAutoJoin.map((c: string) => c.replace(/^#/, "")),
+        channels: rawAutoJoin.map((name: string) => ({
+          id: `channel_${serverId}_${name.replace(/^#/, "")}`,
+          name: name.replace(/^#/, ""),
+          type: ChannelType.TEXT,
+          profileId: "profile-user-1",
+          serverId,
+        })),
+        members: [{
+          id: `${serverId}:self`,
+          profileId: s.profileId || "profile-user-1",
+          profile: {
+            id: s.profileId || "profile-user-1",
+            userId: (s.profileId || "profile-user-1").replace("profile-", ""),
+            name: (s.nicknames && s.nicknames[0]) ? s.nicknames[0] : "ReactUser",
+            realname: s.realname || "",
+            host: s.host || "127.0.0.1",
+            imageUrl: "",
+            email: "user@irc.local",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          serverId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }],
+        customCommands: s.customCommands || [],
+        notificationSettings: s.notificationSettings,
+      });
+    });
+  } else if (typeof serversRaw === "object" && serversRaw !== null) {
+    Object.entries(serversRaw).forEach(([serverKey, sAny]: [string, any]) => {
+      const s = sAny || {};
+      const serverId = serverKey;
+      const autoJoin: string[] = Array.isArray(s.autoJoinChannels) ? s.autoJoinChannels : [];
+      const channelsDict = typeof s.channels === "object" && s.channels !== null ? s.channels : {};
+
+      const channelNamesSet = new Set<string>();
+      autoJoin.forEach((ch) => channelNamesSet.add(ch.replace(/^#/, "")));
+      Object.keys(channelsDict).forEach((chKey) => channelNamesSet.add(chKey.replace(/^#/, "")));
+
+      const channelsList = Array.from(channelNamesSet).map((chName) => {
+        const fullKey = `#${chName}`;
+        const chData = channelsDict[fullKey] || channelsDict[chName] || {};
+        return {
+          id: `channel_${serverId}_${chName}`,
+          name: chName,
+          type: ChannelType.TEXT,
+          profileId: "profile-user-1",
+          serverId,
+          topic: chData.topic,
+          key: chData.key,
+          notificationSettings: chData.notificationSettings,
+        };
+      });
+
+      serversArray.push({
+        id: serverId,
+        name: s.name || serverKey,
+        imageUrl: s.imageUrl || "",
+        inviteCode: s.inviteCode || serverId,
+        profileId: s.profileId || "profile-user-1",
+        host: s.host || "127.0.0.1",
+        port: s.port || 6667,
+        useTls: s.useTls ?? false,
+        nicknames: s.nicknames || ["ReactUser"],
+        realname: s.realname,
+        password: s.password,
+        autoConnect: s.autoConnect,
+        autoReconnect: s.autoReconnect,
+        autoJoinChannels: autoJoin.map((c) => c.replace(/^#/, "")),
+        channels: channelsList,
+        members: [{
+          id: `${serverId}:self`,
+          profileId: s.profileId || "profile-user-1",
+          profile: {
+            id: s.profileId || "profile-user-1",
+            userId: (s.profileId || "profile-user-1").replace("profile-", ""),
+            name: (s.nicknames && s.nicknames[0]) ? s.nicknames[0] : "ReactUser",
+            realname: s.realname || "",
+            host: s.host || "127.0.0.1",
+            imageUrl: "",
+            email: "user@irc.local",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          serverId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }],
+        customCommands: s.customCommands || [],
+        notificationSettings: s.notificationSettings,
+      });
+    });
+  }
+
+  return {
+    compactMode: preferences.compactMode ?? false,
+    enableMarkdown: preferences.enableMarkdown ?? true,
+    confirmLeaveChannel: preferences.confirmLeaveChannel ?? true,
+    enableCommandSuggestions: preferences.enableCommandSuggestions ?? true,
+    enableLinkPreviews: preferences.enableLinkPreviews ?? true,
+    enableWebPagePreviews: preferences.enableWebPagePreviews ?? true,
+    linkPreviewApiUrl: preferences.linkPreviewApiUrl ?? "",
+    statusDisplayMode: preferences.statusDisplayMode ?? "compact",
+    dateFormatPreset: preferences.dateFormatPreset ?? "d MMM yyyy, HH:mm",
+    customDateFormat: preferences.customDateFormat ?? "",
+    autoUpdateMode: preferences.autoUpdateMode ?? "ask",
+    sortDmByUnread: preferences.sortDmByUnread ?? false,
+    dmSortOrder: preferences.dmSortOrder ?? "opening",
+
+    uploadConfig: tomlJson.uploadConfig || { provider: "disabled" },
+    notificationSettings: tomlJson.notificationSettings || {
+      soundEnabled: true,
+      soundPreset: "chime",
+      dmSoundPreset: "bell",
+      soundCooldownMs: 1000,
+      popupEnabled: true,
+      taskbarHighlightEnabled: true,
+      channelNotifications: "all",
+      dmNotifications: "all",
+    },
+    urlAuthRules: tomlJson.urlAuthRules || [],
+    conversationNotificationSettings: tomlJson.conversationNotificationSettings || {},
+    serverMotdPolicies: tomlJson.serverMotdPolicies || {},
+    serverMotdSeenHashes: tomlJson.serverMotdSeenHashes || {},
+
+    servers: serversArray,
+    currentProfile: MOCK_PROFILE,
+  };
+}
+
+const tauriTomlStorage: StateStorage = {
+  getItem: async (_name: string): Promise<string | null> => {
+    try {
+      const data = await invoke<any>("load_config_toml");
+      if (data) {
+        const deserialized = deserializeTomlJsonToState(data);
+        return JSON.stringify({ state: deserialized, version: 5 });
+      }
+
+      // Automatic migration: check for legacy LocalStorage config if config.toml doesn't exist
+      const legacyRaw = localStorage.getItem("diirc-store");
+      if (legacyRaw) {
+        try {
+          const parsedLegacy = JSON.parse(legacyRaw);
+          const stateToMigrate = parsedLegacy.state || parsedLegacy;
+          const tomlJson = serializeStateToTomlJson(stateToMigrate);
+          await invoke("save_config_toml", { config: tomlJson });
+          const deserialized = deserializeTomlJsonToState(tomlJson);
+          return JSON.stringify({ state: deserialized, version: 5 });
+        } catch (e) {
+          console.error("Failed to migrate legacy LocalStorage config:", e);
+        }
+      }
+
+      // Initial state fallback saved to TOML
+      const initialToml = serializeStateToTomlJson({
+        servers: INITIAL_SERVERS,
+        compactMode: false,
+        enableMarkdown: true,
+        confirmLeaveChannel: true,
+        enableCommandSuggestions: true,
+        enableLinkPreviews: true,
+        enableWebPagePreviews: true,
+        linkPreviewApiUrl: "",
+        statusDisplayMode: "compact",
+        dateFormatPreset: "d MMM yyyy, HH:mm",
+        customDateFormat: "",
+        autoUpdateMode: "ask",
+        sortDmByUnread: false,
+        dmSortOrder: "opening",
+        uploadConfig: { provider: "disabled" },
+        notificationSettings: {
+          soundEnabled: true,
+          soundPreset: "chime",
+          dmSoundPreset: "bell",
+          soundCooldownMs: 1000,
+          popupEnabled: true,
+          taskbarHighlightEnabled: true,
+          channelNotifications: "all",
+          dmNotifications: "all",
+        },
+      });
+      await invoke("save_config_toml", { config: initialToml });
+      return JSON.stringify({ state: deserializeTomlJsonToState(initialToml), version: 5 });
+    } catch (err) {
+      console.error("Error loading configuration from TOML:", err);
+      return null;
+    }
+  },
+  setItem: async (_name: string, value: string): Promise<void> => {
+    try {
+      const parsed = JSON.parse(value);
+      const state = parsed.state || parsed;
+      const tomlJson = serializeStateToTomlJson(state);
+      await invoke("save_config_toml", { config: tomlJson });
+    } catch (err) {
+      console.error("Failed to save configuration to TOML:", err);
+    }
+  },
+  removeItem: async (_name: string): Promise<void> => {
+    // No-op for file storage
+  },
+};
 
 export const useMockStore = create<MockState>()(
   persist<MockState>(
@@ -2481,7 +2813,7 @@ export const useMockStore = create<MockState>()(
         return removedContent;
       },
 
-      deleteDirectMessage: (conversationId, messageId) => {
+      deleteDirectMessage: (conversationId: string, messageId: string) => {
         set((state) => ({
           directMessages: {
             ...state.directMessages,
@@ -2495,6 +2827,7 @@ export const useMockStore = create<MockState>()(
     {
       name: "diirc-store",
       version: 5,
+      storage: createJSONStorage(() => tauriTomlStorage),
       partialize: (state) => ({
         ...state,
         messages: {},
@@ -2508,75 +2841,6 @@ export const useMockStore = create<MockState>()(
           channels: s.channels.filter((c) => !c.isTemporary),
         })),
       }),
-      migrate: (persistedState: any) => {
-        if (!persistedState || !Array.isArray(persistedState.servers)) {
-          return {
-            servers: [],
-            messages: {},
-            directMessages: {},
-            activeChatKey: null,
-            unreadState: {},
-            historyLoadToken: 0,
-            historyWindow: EMPTY_HISTORY_WINDOW,
-          };
-        }
-        const currentProfileId = persistedState.currentProfile?.id || MOCK_PROFILE.id;
-
-        const sanitizedServers = persistedState.servers.map((s: any) => {
-          const nicks = s.nicknames || (s.nickname ? [s.nickname] : ["ReactUser"]);
-          const primaryNick = nicks[0] || "ReactUser";
-
-          const members = (Array.isArray(s.members) ? s.members : []).map((m: any) => {
-            if (m.profileId === currentProfileId || m.id?.startsWith("member-")) {
-              return {
-                ...m,
-                profile: {
-                  ...m.profile,
-                  name: primaryNick,
-                },
-              };
-            }
-            return m;
-          });
-
-          return {
-            ...s,
-            host: s.host || "127.0.0.1",
-            port: s.port || 6667,
-            nicknames: nicks,
-            channels: Array.isArray(s.channels) ? s.channels : [],
-            members,
-            useTls: s.useTls ?? false,
-            autoJoinChannels: Array.isArray(s.autoJoinChannels) ? s.autoJoinChannels : ["general", "test"],
-            customCommands: Array.isArray(s.customCommands)
-              ? s.customCommands
-                  .map((c: any) => ({
-                    trigger: String(c?.trigger || "").replace(/^\//, "").trim(),
-                    message: String(c?.message || "").trim(),
-                    description: String(c?.description || "").trim() || undefined,
-                    suggestions: Array.isArray(c?.suggestions)
-                      ? c.suggestions.map((x: any) => String(x || "").trim()).filter(Boolean)
-                      : typeof c?.suggestions === "string"
-                      ? String(c.suggestions)
-                          .split(",")
-                          .map((x: string) => x.trim())
-                          .filter(Boolean)
-                      : [],
-                  }))
-                  .filter((c: CustomCommand) => c.trigger && c.message)
-              : [],
-          };
-        });
-        return {
-          ...persistedState,
-          servers: sanitizedServers,
-          messages: {},
-          directMessages: {},
-          activeChatKey: null,
-          historyLoadToken: 0,
-          historyWindow: EMPTY_HISTORY_WINDOW,
-        };
-      }
     }
   )
 );

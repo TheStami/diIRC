@@ -1,0 +1,82 @@
+# ==========================================
+# General Preferences & Display
+# ==========================================
+[preferences]
+compactMode = false
+enableMarkdown = true
+confirmLeaveChannel = true
+enableCommandSuggestions = true
+enableLinkPreviews = true
+enableWebPagePreviews = true
+linkPreviewApiUrl = ""
+statusDisplayMode = "compact"
+dateFormatPreset = "d MMM yyyy, HH:mm"
+customDateFormat = ""
+autoUpdateMode = "ask"
+sortDmByUnread = false
+dmSortOrder = "opening"
+
+# ==========================================
+# File / Image Upload Configuration
+# ==========================================
+[uploadConfig]
+provider = "litterbox"
+litterboxTime = "24h"
+pomfUrl = ""
+
+# ==========================================
+# Global Notification Settings
+# ==========================================
+[notificationSettings]
+soundEnabled = true
+soundPreset = "chime"
+dmSoundPreset = "bell"
+customSoundUrl = ""
+customDmSoundUrl = ""
+soundCooldownMs = 1000
+popupEnabled = true
+taskbarHighlightEnabled = true
+channelNotifications = "all"      # "all" | "mentions" | "off"
+dmNotifications = "all"           # "all" | "off"
+
+# ==========================================
+# IRC Servers Configuration
+# ==========================================
+[servers.libera]
+name = "Libera Chat"
+host = "irc.libera.chat"
+port = 6697
+useTls = true
+nicknames = ["ReactUser", "ReactUser_"]
+autoJoinChannels = ["#bash", "#rust"]
+
+# Server-level notification overrides
+[servers.libera.notificationSettings]
+sound = "disabled"
+popup = "enabled"
+channelNotifications = "mentions"
+
+# Custom user slash command example
+[[servers.libera.customCommands]]
+trigger = "hello"
+message = "say Hello everyone!"
+description = "Channel greeting"
+
+# Channel-level configuration with notification overrides
+[servers.libera.channels."#rust"]
+topic = "Official Rust programming language channel"
+
+[servers.libera.channels."#rust".notificationSettings]
+sound = "enabled"
+channelNotifications = "all"       # Override: notify on all messages in this channel
+
+# ==========================================
+# Additional Servers Example
+# ==========================================
+[servers.oftc]
+name = "OFTC Network"
+host = "irc.oftc.net"
+port = 6697
+useTls = true
+nicknames = ["ReactUser"]
+autoJoinChannels = ["#debian"]

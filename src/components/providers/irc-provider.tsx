@@ -324,8 +324,8 @@ export const IrcProvider = ({ children }: { children: React.ReactNode }) => {
 
     const isChannelMsg = channel.startsWith("#") || channel.startsWith("&");
     const msgTimestamp = payload.timestamp;
-    const isDummySender = sender === "***" || !sender || !sender.trim();
-    const effectiveIsSystem = isSystem || isDummySender;
+    const isDummySender = sender === "***" || sender === "System" || !sender || !sender.trim();
+    const effectiveIsSystem = Boolean(isSystem || isDummySender);
 
     if (isDummySender && !isChannelMsg) {
       const store = useMockStore.getState();

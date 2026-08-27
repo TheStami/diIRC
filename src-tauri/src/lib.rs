@@ -1067,6 +1067,75 @@ async fn delete_last_log_entry(
 }
 
 #[tauri::command]
+async fn load_config_toml(app: AppHandle) -> Result<Option<serde_json::Value>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    let config_path = dir.join("config.toml");
+
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&config_path)
+        .await
+        .map_err(|e| format!("Failed to read config.toml: {e}"))?;
+    let toml_val: serde_json::Value = toml::from_str(&content)
+        .map_err(|e| format!("Failed to parse config.toml: {e}"))?;
+
+    Ok(Some(toml_val))
+}
+
+#[tauri::command]
+async fn save_config_toml(app: AppHandle, config: serde_json::Value) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create app data directory: {e}"))?;
+
+    let config_path = dir.join("config.toml");
+    let toml_string = toml::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize configuration to TOML: {e}"))?;
+
+    fs::write(&config_path, toml_string)
+        .await
+        .map_err(|e| format!("Failed to write config.toml: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_config_file(app: AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data directory: {e}"))?;
+    fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create app data directory: {e}"))?;
+
+    let config_path = dir.join("config.toml");
+
+    if !config_path.exists() {
+        let default_config = serde_json::json!({});
+        let toml_string = toml::to_string_pretty(&default_config)
+            .map_err(|e| format!("Failed to serialize default config: {e}"))?;
+        fs::write(&config_path, toml_string)
+            .await
+            .map_err(|e| format!("Failed to create config.toml: {e}"))?;
+    }
+
+    open::that(&config_path)
+        .map_err(|e| format!("Failed to open config.toml in system editor: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn connect_irc(
     app: AppHandle,
     state: State<'_, IrcState>,
@@ -3097,7 +3166,10 @@ pub fn run() {
             send_os_notification,
             clear_os_notification,
             request_motd,
-            send_away
+            send_away,
+            load_config_toml,
+            save_config_toml,
+            open_config_file
         ])
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {

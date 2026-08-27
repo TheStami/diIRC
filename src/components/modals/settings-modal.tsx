@@ -40,7 +40,9 @@ import {
   MessageSquare,
   ArrowUpDown,
   ScrollText,
+  ExternalLink,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { StatusDisplayMode, formatMessageDate } from "@/lib/mock-store";
 import { MotdDisplayPolicy } from "@/types";
 import { playNotificationSound, SoundPreset } from "@/lib/notification-sound";
@@ -185,6 +187,14 @@ export const SettingsModal = () => {
     });
     setNewRulePrefix("");
     setNewRuleHeaderValue("");
+  };
+
+  const handleOpenConfigFile = async () => {
+    try {
+      await invoke("open_config_file");
+    } catch (err) {
+      console.error("Failed to open configuration file:", err);
+    }
   };
 
   return (
@@ -379,6 +389,31 @@ export const SettingsModal = () => {
               </div>
             </div>
           </div>
+
+          {/* Configuration File (TOML) */}
+          <div className="flex flex-row items-center justify-between rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-zinc-50 dark:bg-[#2b2d31] p-4 shadow-sm transition">
+            <div className="space-y-0.5 pr-4">
+              <div className="flex items-center gap-x-2">
+                <FileText className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
+                <label className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  Configuration file
+                </label>
+              </div>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed">
+                Edit application configuration directly in your system default editor (TOML format).
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOpenConfigFile}
+              className="text-xs font-semibold border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 flex items-center gap-x-1.5 shrink-0"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Open configuration file
+            </Button>
+          </div>
+
           {/* Compact Mode */}
           <div className="flex flex-row items-center justify-between rounded-xl border border-zinc-200 dark:border-zinc-700/60 bg-zinc-50 dark:bg-[#2b2d31] p-4 shadow-sm transition">
             <div className="space-y-0.5 pr-4">
