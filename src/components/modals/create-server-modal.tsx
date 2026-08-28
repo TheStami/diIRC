@@ -49,6 +49,7 @@ const formSchema = z.object({
   autoConnect: z.boolean().default(true),
   autoReconnect: z.boolean().default(true),
   parseLegacyZncTimestamps: z.boolean().default(false),
+  legacyReply: z.boolean().default(false),
   customCommands: z.array(
     z.object({
       trigger: z.string(),
@@ -103,6 +104,7 @@ export const CreateServerModal = () => {
         autoConnect: true,
         autoReconnect: true,
         parseLegacyZncTimestamps: false,
+        legacyReply: false,
         customCommands: [],
       });
     }
@@ -128,6 +130,7 @@ export const CreateServerModal = () => {
         autoConnect: values.autoConnect,
         autoReconnect: values.autoReconnect,
         parseLegacyZncTimestamps: values.parseLegacyZncTimestamps,
+        legacyReply: values.legacyReply,
         customCommands: normalizeCustomCommandsFromForm(values.customCommands),
       });
 
@@ -437,6 +440,30 @@ export const CreateServerModal = () => {
                     </FormLabel>
                     <p className="text-xs text-zinc-500 dark:text-zinc-400">
                       Extract timestamps formatted as [HH:MM:SS] from older bouncers without IRCv3 server-time support
+                    </p>
+                  </div>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                      disabled={isLoading}
+                    />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="legacyReply"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-center justify-between rounded-xl border border-zinc-300/80 dark:border-zinc-700/60 bg-zinc-50 dark:bg-[#2b2d31] p-3.5 shadow-sm">
+                  <div className="space-y-0.5">
+                    <FormLabel className="text-sm font-semibold text-zinc-900 dark:text-zinc-200 cursor-pointer">
+                      Legacy reply compatibility
+                    </FormLabel>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Append quoted reply snippet to outgoing messages for older IRC clients without IRCv3 reply support (e.g. HexChat)
                     </p>
                   </div>
                   <FormControl>

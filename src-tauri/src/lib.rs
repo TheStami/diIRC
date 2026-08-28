@@ -2847,6 +2847,7 @@ async fn send_message(
     reply_nick: Option<String>,
     reply_preview: Option<String>,
     reply_parent_offset: Option<u64>,
+    legacy_reply: Option<bool>,
 ) -> Result<(), String> {
     let senders = state.senders.lock().await;
     if let Some(sender) = senders.get(&server_id) {
@@ -2875,13 +2876,18 @@ async fn send_message(
         } else {
             0
         };
-        let budget = reply_body_budget(&sender_name, &channel, tag_bytes);
-        let wire_message = format_compat_reply(
-            reply_nick.as_deref(),
-            reply_preview.as_deref(),
-            &message,
-            budget,
-        );
+        let use_legacy = legacy_reply.unwrap_or(false);
+        let wire_message = if use_legacy {
+            let budget = reply_body_budget(&sender_name, &channel, tag_bytes);
+            format_compat_reply(
+                reply_nick.as_deref(),
+                reply_preview.as_deref(),
+                &message,
+                budget,
+            )
+        } else {
+            message.clone()
+        };
 
         let send_result = if has_message_tags {
             if let Some(msgid) = reply_msgid {

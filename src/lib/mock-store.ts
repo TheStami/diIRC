@@ -339,6 +339,7 @@ export interface AddServerOptions {
   autoConnect?: boolean;
   autoReconnect?: boolean;
   parseLegacyZncTimestamps?: boolean;
+  legacyReply?: boolean;
   customCommands?: CustomCommand[];
   notificationSettings?: NotificationOverride;
   displayNameMode?: ServerUserDisplayNameMode;
@@ -357,6 +358,7 @@ export interface UpdateServerOptions {
   autoConnect?: boolean;
   autoReconnect?: boolean;
   parseLegacyZncTimestamps?: boolean;
+  legacyReply?: boolean;
   customCommands?: CustomCommand[];
   notificationSettings?: NotificationOverride;
   motdPolicy?: ServerMotdDisplayPolicy;
@@ -1019,6 +1021,7 @@ export const useMockStore = create<MockState>()(
           autoConnect,
           autoReconnect,
           parseLegacyZncTimestamps: typeof optionsOrName === "object" ? (optionsOrName.parseLegacyZncTimestamps ?? false) : false,
+          legacyReply: typeof optionsOrName === "object" ? (optionsOrName.legacyReply ?? false) : false,
           customCommands,
           imageUrl,
           inviteCode: `invite-${uuidv4().slice(0, 8)}`,
@@ -1112,6 +1115,7 @@ export const useMockStore = create<MockState>()(
                 autoConnect: optionsOrName.autoConnect ?? s.autoConnect ?? true,
                 autoReconnect: optionsOrName.autoReconnect ?? s.autoReconnect ?? true,
                 parseLegacyZncTimestamps: optionsOrName.parseLegacyZncTimestamps ?? s.parseLegacyZncTimestamps,
+                legacyReply: optionsOrName.legacyReply ?? s.legacyReply ?? false,
                 customCommands: optionsOrName.customCommands ?? s.customCommands,
                 imageUrl: optionsOrName.imageUrl || s.imageUrl,
                 channels: s.channels,

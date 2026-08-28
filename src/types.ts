@@ -229,6 +229,7 @@ export interface Server {
   motdPolicy?: ServerMotdDisplayPolicy;
   displayNameMode?: ServerUserDisplayNameMode;
   parseLegacyZncTimestamps?: boolean;
+  legacyReply?: boolean;
 }
 
 export type ServerWithMembersWithProfiles = Server;

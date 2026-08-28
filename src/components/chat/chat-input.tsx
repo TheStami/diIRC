@@ -188,16 +188,19 @@ export const ChatInput = ({
         return getIrcByteCount(text);
       }
       const tagBytes = replyTagOverheadBytes(pendingReply.msgid);
-      const bodyBudget = Math.max(0, maxBytes - tagBytes);
-      const wire = formatCompatReply(
-        pendingReply.nick,
-        pendingReply.preview,
-        text,
-        bodyBudget
-      );
-      return getIrcByteCount(wire) + tagBytes;
+      if (activeServer?.legacyReply) {
+        const bodyBudget = Math.max(0, maxBytes - tagBytes);
+        const wire = formatCompatReply(
+          pendingReply.nick,
+          pendingReply.preview,
+          text,
+          bodyBudget
+        );
+        return getIrcByteCount(wire) + tagBytes;
+      }
+      return getIrcByteCount(text) + tagBytes;
     },
-    [pendingReply, maxBytes]
+    [pendingReply, maxBytes, activeServer?.legacyReply]
   );
   const currentBytes = wireBytesFor(content);
 
@@ -813,6 +816,7 @@ export const ChatInput = ({
             isReplyLineLocal && replyTarget?.parentOffset != null
               ? replyTarget.parentOffset
               : null,
+          legacyReply: activeServer.legacyReply ?? false,
           });
         } catch (err: any) {
           console.error("Failed to send message via Tauri IRC:", err);
