@@ -4048,8 +4048,29 @@ async fn create_app_backup(app: tauri::AppHandle) -> Result<String, String> {
     .map_err(|e| format!("Join error during backup task: {e}"))?
 }
 
+/// WebKitGTK workarounds for Linux (Wayland + X11).
+///
+/// Avoids `Failed to create GBM buffer … Invalid argument` and Wayland
+/// `Error 71` crashes caused by the DMABUF renderer (especially on NVIDIA).
+/// See https://v2.tauri.app/develop/debug/linux-graphics/ and tauri-apps/tauri#9394.
+/// Existing env values are left alone so users can override.
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_env() {
+    // Keeps GPU acceleration on NVIDIA Wayland while avoiding explicit-sync crashes.
+    if std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
+        std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+    }
+    // Disables the DMABUF path that fails GBM allocation under both Wayland and X11.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    configure_linux_webview_env();
+
     tauri::Builder::default()
         .manage(IrcState {
             senders: Arc::new(Mutex::new(HashMap::new())),
