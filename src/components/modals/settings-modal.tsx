@@ -50,7 +50,12 @@ import { MotdDisplayPolicy, UserDisplayNameMode, ReplyMode } from "@/types";
 import { playNotificationSound, SoundPreset } from "@/lib/notification-sound";
 import { requestDesktopNotificationPermission } from "@/lib/notification-service";
 import { NotificationSettingsFields } from "@/components/notifications/notification-settings-fields";
-import { checkForAppUpdate } from "@/lib/update-service";
+import {
+  BUILD_UPDATE_CHANNEL,
+  UPDATE_CHANNELS,
+  checkForAppUpdate,
+  resolveUpdateChannelId,
+} from "@/lib/update-service";
 import { Update } from "@tauri-apps/plugin-updater";
 import tauriConfig from "../../../src-tauri/tauri.conf.json";
 
@@ -126,6 +131,9 @@ export const SettingsModal = () => {
   const setUpdateSourceMode = useMockStore((state) => state.setUpdateSourceMode);
   const customUpdateUrl = useMockStore((state) => state.customUpdateUrl) || "";
   const setCustomUpdateUrl = useMockStore((state) => state.setCustomUpdateUrl);
+  const customUpdatePubkey = useMockStore((state) => state.customUpdatePubkey) || "";
+  const setCustomUpdatePubkey = useMockStore((state) => state.setCustomUpdatePubkey);
+  const activeUpdateChannel = resolveUpdateChannelId(updateSourceMode);
 
   const sortDmByUnread = useMockStore((state) => state.sortDmByUnread ?? true);
   const setSortDmByUnread = useMockStore((state) => state.setSortDmByUnread);
@@ -356,31 +364,44 @@ export const SettingsModal = () => {
               </label>
             </div>
 
-            {/* Version source selector */}
+            {/* Update channel selector */}
             <div className="pt-2 border-t border-zinc-200 dark:border-zinc-700/60 space-y-2">
               <div className="flex items-center justify-between">
                 <div>
                   <div className="text-xs font-bold text-zinc-900 dark:text-zinc-100 flex items-center gap-x-1.5">
                     <Server className="w-3.5 h-3.5 text-indigo-500" />
-                    Update version source
+                    Update channel
                   </div>
                   <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
-                    Choose whether to fetch version manifests from the default server or a custom URL.
+                    Choose where updates come from. After switching, the next check offers that channel's latest build.
                   </div>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 gap-2 pt-1">
                 <select
-                  value={updateSourceMode}
-                  onChange={(e) => setUpdateSourceMode(e.target.value as "default" | "custom")}
+                  value={activeUpdateChannel}
+                  onChange={(e) =>
+                    setUpdateSourceMode(e.target.value as "official" | "skipahead" | "custom")
+                  }
                   className="w-full bg-white dark:bg-[#1e1f22] border border-zinc-300 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
                 >
-                  <option value="default">Default (Cloudflare Worker)</option>
+                  {Object.values(UPDATE_CHANNELS).map((channel) => (
+                    <option key={channel.id} value={channel.id}>
+                      {channel.label}
+                      {channel.id === BUILD_UPDATE_CHANNEL ? " (this build)" : ""}
+                    </option>
+                  ))}
                   <option value="custom">Custom URL</option>
                 </select>
 
-                {updateSourceMode === "custom" && (
+                {activeUpdateChannel !== "custom" && (
+                  <div className="text-[10px] text-zinc-500 dark:text-zinc-400 pl-1">
+                    {UPDATE_CHANNELS[activeUpdateChannel].description}
+                  </div>
+                )}
+
+                {activeUpdateChannel === "custom" && (
                   <div className="space-y-1 mt-1">
                     <Input
                       value={customUpdateUrl}
@@ -390,6 +411,15 @@ export const SettingsModal = () => {
                     />
                     <div className="text-[10px] text-zinc-500 dark:text-zinc-400 pl-1">
                       Must be a valid HTTP(S) endpoint returning a Tauri update JSON manifest.
+                    </div>
+                    <Input
+                      value={customUpdatePubkey}
+                      onChange={(e) => setCustomUpdatePubkey(e.target.value)}
+                      placeholder="Public key (optional)"
+                      className="bg-white dark:bg-[#1e1f22] border-zinc-300 dark:border-zinc-700 text-xs font-mono"
+                    />
+                    <div className="text-[10px] text-zinc-500 dark:text-zinc-400 pl-1">
+                      Minisign public key the releases are signed with. Leave empty to use the official key.
                     </div>
                   </div>
                 )}

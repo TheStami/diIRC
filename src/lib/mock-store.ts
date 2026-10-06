@@ -492,10 +492,17 @@ interface MockState {
   conversationNotificationSettings: Record<string, NotificationOverride>;
   autoUpdateMode: "auto" | "ask" | "disabled";
   setAutoUpdateMode: (mode: "auto" | "ask" | "disabled") => void;
-  updateSourceMode: "default" | "custom";
+  /** `default` follows the channel the installed build was released on. */
+  updateSourceMode: "default" | "official" | "skipahead" | "custom";
   customUpdateUrl: string;
-  setUpdateSourceMode: (mode: "default" | "custom") => void;
+  /** Optional minisign public key for a custom source; empty = built-in official key. */
+  customUpdatePubkey: string;
+  /** Set when the update source changes so the next check may cross versions. */
+  updateChannelSwitchPending: boolean;
+  setUpdateSourceMode: (mode: "default" | "official" | "skipahead" | "custom") => void;
   setCustomUpdateUrl: (url: string) => void;
+  setCustomUpdatePubkey: (pubkey: string) => void;
+  setUpdateChannelSwitchPending: (pending: boolean) => void;
   serverMotds: Record<string, string[]>;
   setServerMotd: (serverId: string, motd: string[]) => void;
   globalMotdPolicy: MotdDisplayPolicy;
@@ -722,8 +729,18 @@ export const useMockStore = create<MockState>()(
       setAutoUpdateMode: (mode) => set({ autoUpdateMode: mode }),
       updateSourceMode: "default",
       customUpdateUrl: "",
-      setUpdateSourceMode: (mode) => set({ updateSourceMode: mode }),
-      setCustomUpdateUrl: (url) => set({ customUpdateUrl: url }),
+      customUpdatePubkey: "",
+      updateChannelSwitchPending: false,
+      setUpdateSourceMode: (mode) =>
+        set((state) =>
+          state.updateSourceMode === mode
+            ? {}
+            : { updateSourceMode: mode, updateChannelSwitchPending: true }
+        ),
+      setCustomUpdateUrl: (url) => set({ customUpdateUrl: url, updateChannelSwitchPending: true }),
+      setCustomUpdatePubkey: (pubkey) =>
+        set({ customUpdatePubkey: pubkey, updateChannelSwitchPending: true }),
+      setUpdateChannelSwitchPending: (pending) => set({ updateChannelSwitchPending: pending }),
       serverMotds: {},
       setServerMotd: (serverId: string, motd: string[]) =>
         set((state) => ({

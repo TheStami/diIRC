@@ -3952,6 +3952,8 @@ struct UpdateMetadata {
 async fn check_app_update(
     webview: tauri::WebviewWindow,
     endpoint: Option<String>,
+    pubkey: Option<String>,
+    allow_any_version: Option<bool>,
 ) -> Result<Option<UpdateMetadata>, String> {
     use tauri_plugin_updater::UpdaterExt;
     use reqwest::Url;
@@ -3963,6 +3965,14 @@ async fn check_app_update(
             let url = Url::parse(ep_clean).map_err(|e| format!("Invalid update URL: {e}"))?;
             builder = builder.endpoints(vec![url]).map_err(|e| format!("Updater config error: {e}"))?;
         }
+    }
+    // Each update channel signs its releases with its own key.
+    if let Some(key) = pubkey.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+        builder = builder.pubkey(key);
+    }
+    // Switching channels may move to an older or sideways version (e.g. 0.3.5-1 -> 0.3.5).
+    if allow_any_version.unwrap_or(false) {
+        builder = builder.version_comparator(|current, remote| remote.version != current);
     }
 
     let updater = builder.build().map_err(|e| format!("Failed to build updater: {e}"))?;
